@@ -85,6 +85,10 @@ async function getDevice(terminalId: string, env: Env): Promise<Response> {
   return json(row);
 }
 
+// Only offers devices that currently hold a live notification socket — no
+// point letting someone link to a screen that isn't actually showing itself
+// right now. This is a display filter only: an offline unlinked device stays
+// in the DB untouched and reappears here the moment it reconnects.
 async function listUnlinked(request: Request, env: Env): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const role = params.get('role');
@@ -92,24 +96,29 @@ async function listUnlinked(request: Request, env: Env): Promise<Response> {
   if (!isLinkableRole(role)) return json({ error: "role must be 'cfd' or 'sim'" }, 400);
   if (!orgId) return json({ error: 'org_id is required' }, 400);
 
+  const connected = await getConnectedTerminalIds(env);
   const { results } = await env.DB.prepare(
     'SELECT terminal_id, created_at FROM devices WHERE role = ? AND org_id = ? AND linked_to IS NULL ORDER BY created_at DESC'
   )
     .bind(role, orgId)
-    .all();
-  return json(results || []);
+    .all<{ terminal_id: string; created_at: string }>();
+  return json((results || []).filter((r) => connected.has(r.terminal_id)));
 }
 
 // For the admin portal's "devices linked to this organization" list. Not
 // scoped to any particular POS — every device (any role, linked or not)
-// registered under this org.
+// registered under this org. Includes live presence as `online` for display
+// only — being offline never removes a device from this list or from any
+// link it holds; see /devices/remove for the only way a row goes away.
 async function listByOrg(orgId: string, env: Env): Promise<Response> {
-  const { results } = await env.DB.prepare(
-    'SELECT terminal_id, role, linked_to, created_at FROM devices WHERE org_id = ? ORDER BY created_at DESC'
-  )
-    .bind(orgId)
-    .all();
-  return json(results || []);
+  const [connected, { results }] = await Promise.all([
+    getConnectedTerminalIds(env),
+    env.DB.prepare('SELECT terminal_id, role, linked_to, created_at FROM devices WHERE org_id = ? ORDER BY created_at DESC')
+      .bind(orgId)
+      .all<{ terminal_id: string; role: Role; linked_to: string | null; created_at: string }>(),
+  ]);
+  const withStatus = (results || []).map((r) => ({ ...r, online: connected.has(r.terminal_id) }));
+  return json(withStatus);
 }
 
 async function getLinkedDevice(request: Request, posTerminalId: string, env: Env): Promise<Response> {
@@ -171,70 +180,23 @@ async function unlinkDevice(request: Request, env: Env): Promise<Response> {
   return json(await getDeviceRow(env, targetTerminalId));
 }
 
-// Deletes the given terminal_ids and clears any linked_to that pointed at one
-// of them, so a pruned POS doesn't leave a live CFD/sim dangling off a
-// terminal_id that no longer exists.
-async function deleteDevices(env: Env, terminalIds: string[]): Promise<void> {
-  if (terminalIds.length === 0) return;
-  const placeholders = terminalIds.map(() => '?').join(',');
-  await env.DB.prepare(`UPDATE devices SET linked_to = NULL WHERE linked_to IN (${placeholders})`)
-    .bind(...terminalIds)
-    .run();
-  await env.DB.prepare(`DELETE FROM devices WHERE terminal_id IN (${placeholders})`)
-    .bind(...terminalIds)
-    .run();
-}
+// Deliberately no automatic/presence-based deletion: a device's registration
+// (and any link it holds) must survive normal operational gaps — a shop
+// closed overnight, a kassa tab switched to Settings, a WiFi hiccup — since
+// none of those are distinguishable from "gone for good" by presence alone,
+// and getting that wrong once means silently re-pairing a customer display
+// mid-event. Removal is a deliberate admin action instead (see
+// `/devices/remove` below); `online` in listByOrg's response is display-only.
+async function removeDevice(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string };
+  const terminalId = String(body.terminal_id || '');
+  if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
 
-// Prunes registrations of the given role, scoped to one org, that don't
-// currently hold a live notification socket in the DO. Applies to 'pos' too
-// (a closed kassa tab never comes back and shouldn't linger in the admin
-// portal's device list) — pruning it clears any CFD/sim still linked to it
-// rather than leaving them pointed at a dead terminal_id.
-async function pruneDevicesForOrgRole(env: Env, orgId: string, role: Role, connected: Set<string>): Promise<string[]> {
-  const { results } = await env.DB.prepare('SELECT terminal_id FROM devices WHERE role = ? AND org_id = ?')
-    .bind(role, orgId)
-    .all<{ terminal_id: string }>();
-  const stale = (results || []).map((r) => r.terminal_id).filter((id) => !connected.has(id));
-  await deleteDevices(env, stale);
-  return stale;
-}
-
-async function pruneStale(request: Request, env: Env): Promise<Response> {
-  const params = new URL(request.url).searchParams;
-  const role = params.get('role');
-  const orgId = params.get('org_id');
-  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'sim'" }, 400);
-  if (!orgId) return json({ error: 'org_id is required' }, 400);
-
-  const connected = await getConnectedTerminalIds(env);
-  const stale = await pruneDevicesForOrgRole(env, orgId, role, connected);
-  return json({ removed: stale });
-}
-
-// Sweeps every role for one org in one call — used by the admin portal's
-// device list, which (unlike the kassa Settings link panel) isn't scoped to
-// a single role.
-async function pruneAllForOrg(request: Request, env: Env): Promise<Response> {
-  const orgId = new URL(request.url).searchParams.get('org_id');
-  if (!orgId) return json({ error: 'org_id is required' }, 400);
-
-  const connected = await getConnectedTerminalIds(env);
-  const removed: string[] = [];
-  for (const role of DEVICE_ROLES) {
-    removed.push(...(await pruneDevicesForOrgRole(env, orgId, role, connected)));
-  }
-  return json({ removed });
-}
-
-// Sweeps every device across every org — the periodic backstop (see
-// `scheduled` below) for when nobody has any page open to trigger the
-// per-org pruning above.
-async function pruneAllStaleDevices(env: Env): Promise<string[]> {
-  const connected = await getConnectedTerminalIds(env);
-  const { results } = await env.DB.prepare('SELECT terminal_id FROM devices').all<{ terminal_id: string }>();
-  const stale = (results || []).map((r) => r.terminal_id).filter((id) => !connected.has(id));
-  await deleteDevices(env, stale);
-  return stale;
+  // Clears any linked_to that pointed at this terminal_id too, so removing a
+  // POS doesn't leave a CFD/sim dangling off an id that no longer exists.
+  await env.DB.prepare('UPDATE devices SET linked_to = NULL WHERE linked_to = ?').bind(terminalId).run();
+  await env.DB.prepare('DELETE FROM devices WHERE terminal_id = ?').bind(terminalId).run();
+  return json({ ok: true });
 }
 
 // --- Broadcasting ---
@@ -474,8 +436,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/link') return await linkDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/unlink') return await unlinkDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/reset') return await resetEndpoint(request, env);
-      if (request.method === 'POST' && url.pathname === '/devices/prune') return await pruneStale(request, env);
-      if (request.method === 'POST' && url.pathname === '/devices/prune-all') return await pruneAllForOrg(request, env);
+      if (request.method === 'POST' && url.pathname === '/devices/remove') return await removeDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast') return await broadcastEndpoint(request, env);
       if (request.method === 'GET' && url.pathname === '/devices/ws-token') return await issueWsToken(request, env);
       if (url.pathname === '/devices/connect') return await connectDevice(request, env);
@@ -493,12 +454,5 @@ export default {
     } catch (err) {
       return json({ error: 'Unexpected devicehub error', details: (err as Error).message }, 502);
     }
-  },
-
-  // Periodic backstop for the per-org pruning triggered from the webapp:
-  // catches devices left behind when nobody has the kassa Settings page or
-  // the admin portal open to trigger a sweep themselves.
-  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
-    await pruneAllStaleDevices(env);
   },
 };
