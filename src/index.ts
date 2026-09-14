@@ -171,32 +171,70 @@ async function unlinkDevice(request: Request, env: Env): Promise<Response> {
   return json(await getDeviceRow(env, targetTerminalId));
 }
 
-// Prunes registrations of the given (linkable) role that don't currently have
-// a live notification socket. Not applied to 'pos': that's the identity
-// things link TO, not something chosen from a list.
+// Deletes the given terminal_ids and clears any linked_to that pointed at one
+// of them, so a pruned POS doesn't leave a live CFD/sim dangling off a
+// terminal_id that no longer exists.
+async function deleteDevices(env: Env, terminalIds: string[]): Promise<void> {
+  if (terminalIds.length === 0) return;
+  const placeholders = terminalIds.map(() => '?').join(',');
+  await env.DB.prepare(`UPDATE devices SET linked_to = NULL WHERE linked_to IN (${placeholders})`)
+    .bind(...terminalIds)
+    .run();
+  await env.DB.prepare(`DELETE FROM devices WHERE terminal_id IN (${placeholders})`)
+    .bind(...terminalIds)
+    .run();
+}
+
+// Prunes registrations of the given role, scoped to one org, that don't
+// currently hold a live notification socket in the DO. Applies to 'pos' too
+// (a closed kassa tab never comes back and shouldn't linger in the admin
+// portal's device list) — pruning it clears any CFD/sim still linked to it
+// rather than leaving them pointed at a dead terminal_id.
+async function pruneDevicesForOrgRole(env: Env, orgId: string, role: Role, connected: Set<string>): Promise<string[]> {
+  const { results } = await env.DB.prepare('SELECT terminal_id FROM devices WHERE role = ? AND org_id = ?')
+    .bind(role, orgId)
+    .all<{ terminal_id: string }>();
+  const stale = (results || []).map((r) => r.terminal_id).filter((id) => !connected.has(id));
+  await deleteDevices(env, stale);
+  return stale;
+}
+
 async function pruneStale(request: Request, env: Env): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const role = params.get('role');
   const orgId = params.get('org_id');
-  if (!isLinkableRole(role)) return json({ error: "role must be 'cfd' or 'sim'" }, 400);
+  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'sim'" }, 400);
   if (!orgId) return json({ error: 'org_id is required' }, 400);
 
   const connected = await getConnectedTerminalIds(env);
-  const { results } = await env.DB.prepare('SELECT terminal_id FROM devices WHERE role = ? AND org_id = ?')
-    .bind(role, orgId)
-    .all<{
-      terminal_id: string;
-    }>();
-  const stale = (results || []).map((r) => r.terminal_id).filter((id) => !connected.has(id));
-
-  if (stale.length > 0) {
-    const placeholders = stale.map(() => '?').join(',');
-    await env.DB.prepare(`DELETE FROM devices WHERE terminal_id IN (${placeholders})`)
-      .bind(...stale)
-      .run();
-  }
-
+  const stale = await pruneDevicesForOrgRole(env, orgId, role, connected);
   return json({ removed: stale });
+}
+
+// Sweeps every role for one org in one call — used by the admin portal's
+// device list, which (unlike the kassa Settings link panel) isn't scoped to
+// a single role.
+async function pruneAllForOrg(request: Request, env: Env): Promise<Response> {
+  const orgId = new URL(request.url).searchParams.get('org_id');
+  if (!orgId) return json({ error: 'org_id is required' }, 400);
+
+  const connected = await getConnectedTerminalIds(env);
+  const removed: string[] = [];
+  for (const role of DEVICE_ROLES) {
+    removed.push(...(await pruneDevicesForOrgRole(env, orgId, role, connected)));
+  }
+  return json({ removed });
+}
+
+// Sweeps every device across every org — the periodic backstop (see
+// `scheduled` below) for when nobody has any page open to trigger the
+// per-org pruning above.
+async function pruneAllStaleDevices(env: Env): Promise<string[]> {
+  const connected = await getConnectedTerminalIds(env);
+  const { results } = await env.DB.prepare('SELECT terminal_id FROM devices').all<{ terminal_id: string }>();
+  const stale = (results || []).map((r) => r.terminal_id).filter((id) => !connected.has(id));
+  await deleteDevices(env, stale);
+  return stale;
 }
 
 // --- Broadcasting ---
@@ -437,6 +475,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/unlink') return await unlinkDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/reset') return await resetEndpoint(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/prune') return await pruneStale(request, env);
+      if (request.method === 'POST' && url.pathname === '/devices/prune-all') return await pruneAllForOrg(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast') return await broadcastEndpoint(request, env);
       if (request.method === 'GET' && url.pathname === '/devices/ws-token') return await issueWsToken(request, env);
       if (url.pathname === '/devices/connect') return await connectDevice(request, env);
@@ -454,5 +493,12 @@ export default {
     } catch (err) {
       return json({ error: 'Unexpected devicehub error', details: (err as Error).message }, 502);
     }
+  },
+
+  // Periodic backstop for the per-org pruning triggered from the webapp:
+  // catches devices left behind when nobody has the kassa Settings page or
+  // the admin portal open to trigger a sweep themselves.
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    await pruneAllStaleDevices(env);
   },
 };

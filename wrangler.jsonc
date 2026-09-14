@@ -42,5 +42,13 @@
 	],
 	"observability": {
 		"enabled": true
+	},
+	"triggers": {
+		// Periodic backstop that prunes devices with no live notification
+		// socket, across every org — see the `scheduled` handler in
+		// src/index.ts. Per-org pruning also runs on-demand from the webapp
+		// (kassa Settings link panel, admin portal device list); this just
+		// covers the case where nobody has either page open.
+		"crons": ["*/5 * * * *"]
 	}
 }
