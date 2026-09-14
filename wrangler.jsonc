@@ -1,0 +1,46 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "questo-devicehub",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-09-13",
+	"dev": {
+		"port": 8790,
+		"inspector_port": 9790
+	},
+	"vars": {
+		// Base URL this Worker is reachable at — used to build the ws:// URL
+		// handed back to clients. Verify this matches the actual deployed URL
+		// after the first deploy (Workers & Pages → questo-devicehub → the
+		// workers.dev URL shown there, or a custom route if one is added) and
+		// update + redeploy if it doesn't.
+		"WORKER_PUBLIC_URL": "https://questo-devicehub.bertcarels.workers.dev"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "questo-devices",
+			"database_id": "87f7046e-1e85-4724-a09a-a3f81a22ab40"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "DEVICE_HUB",
+				"class_name": "DeviceHub"
+			}
+		]
+	},
+	"migrations": [
+		// new_sqlite_classes (not new_classes): Durable Objects on the Workers
+		// Free plan require the SQLite storage backend.
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"DeviceHub"
+			]
+		}
+	],
+	"observability": {
+		"enabled": true
+	}
+}

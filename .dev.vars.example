@@ -1,0 +1,10 @@
+# Copy this file to .dev.vars and fill in your values.
+# .dev.vars is git-ignored and must never be committed.
+
+# Signs/verifies the short-lived notification-socket tokens. Just needs to be
+# a long random value, not validated externally.
+WS_TOKEN_SECRET=change-me-to-a-long-random-value
+
+# Shared with the payment worker's own .dev.vars — authorizes its
+# server-to-server calls to POST /devices/broadcast.
+INTERNAL_API_KEY=change-me-to-a-long-random-value
