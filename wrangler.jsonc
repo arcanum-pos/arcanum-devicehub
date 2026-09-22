@@ -14,6 +14,14 @@
 	// arcanum-backend's own workers_dev: false — it defaults to true when
 	// unset, so a future deploy can't silently re-expose this Worker.
 	"workers_dev": false,
+	// Explicit empty array, not just an absent key — same lesson as the
+	// triggers block below: omitting `routes` from a deploy only means
+	// "don't touch whatever's already assigned", it does NOT remove the
+	// arcanum-devicehub.kaboutersoft.be custom domain that used to be
+	// declared here. Confirmed by testing: that hostname kept routing here
+	// and responding to /devices/connect even after this array was first
+	// deleted rather than emptied.
+	"routes": [],
 	"d1_databases": [
 		{
 			"binding": "DB",
