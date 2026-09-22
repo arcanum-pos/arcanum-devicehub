@@ -21,7 +21,6 @@
 	// declared here. Confirmed by testing: that hostname kept routing here
 	// and responding to /devices/connect even after this array was first
 	// deleted rather than emptied.
-	"routes": [],
 	"d1_databases": [
 		{
 			"binding": "DB",
