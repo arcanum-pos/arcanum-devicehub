@@ -7,6 +7,11 @@
 		"port": 8790,
 		"inspector_port": 9790
 	},
+	// Explicit now that a custom domain is the canonical public entry point
+	// (adding `routes` silently disables workers_dev by default otherwise —
+	// pinned here so a future deploy can't silently re-enable it, same
+	// reasoning as arcanum-backend's own workers_dev: false).
+	"workers_dev": false,
 	"routes": [
 		{
 			"pattern": "arcanum-devicehub.kaboutersoft.be",
