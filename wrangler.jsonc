@@ -52,6 +52,28 @@
 			"new_sqlite_classes": [
 				"DeviceHub"
 			]
+		},
+		// Purely cosmetic cleanup: the DO namespace created at v1 is still
+		// internally labeled with the script's pre-rename name
+		// (questo-devicehub) -- Cloudflare's dashboard never updates that
+		// label on a later Worker rename. Retiring and recreating the class
+		// here (safe: DeviceHub never calls state.storage at all, only the
+		// WebSocket Hibernation API for live connections) gets a fresh
+		// namespace labeled under the current name, arcanum-devicehub. Done
+		// while there's no live traffic; any currently-open kiosk sockets
+		// would drop and auto-reconnect via connectNotifications' own
+		// backoff logic.
+		{
+			"tag": "v2",
+			"deleted_classes": [
+				"DeviceHub"
+			]
+		},
+		{
+			"tag": "v3",
+			"new_sqlite_classes": [
+				"DeviceHub"
+			]
 		}
 	],
 	"observability": {
