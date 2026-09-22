@@ -78,5 +78,18 @@
 	],
 	"observability": {
 		"enabled": true
+	},
+	// Explicit empty array, not just an absent key: the "Replace
+	// presence-based auto-deletion with manual device removal" commit
+	// removed the scheduled() handler and this triggers block back on
+	// 2026-09-14, but omitting the `triggers` key from a deploy only means
+	// "don't touch whatever's already configured" — it does NOT clear an
+	// existing Cron Trigger on Cloudflare's side. That trigger (*/5 * * * *)
+	// kept firing against a Worker with no scheduled() export ever since,
+	// erroring every 5 minutes with no functional impact (nothing depended
+	// on it) but polluting the logs. This explicit empty array is what
+	// actually tells Cloudflare to remove it.
+	"triggers": {
+		"crons": []
 	}
 }
