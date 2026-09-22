@@ -7,13 +7,22 @@
 		"port": 8790,
 		"inspector_port": 9790
 	},
+	"routes": [
+		{
+			"pattern": "arcanum-devicehub.kaboutersoft.be",
+			"custom_domain": true
+		}
+	],
 	"vars": {
 		// Base URL this Worker is reachable at — used to build the ws:// URL
 		// handed back to clients. Verify this matches the actual deployed URL
-		// after the first deploy (Workers & Pages → questo-devicehub → the
-		// workers.dev URL shown there, or a custom route if one is added) and
-		// update + redeploy if it doesn't.
-		"WORKER_PUBLIC_URL": "https://questo-devicehub.bertcarels.workers.dev"
+		// after any future rename (Workers & Pages → arcanum-devicehub → the
+		// custom domain or workers.dev URL shown there) and update + redeploy
+		// if it doesn't — a stale value here fails silently: the client just
+		// can't open its notification socket, so it never appears "online"
+		// anywhere (e.g. kassa Settings' device-link list, which only shows
+		// devices with a live socket — see listUnlinked).
+		"WORKER_PUBLIC_URL": "https://arcanum-devicehub.kaboutersoft.be"
 	},
 	"d1_databases": [
 		{
