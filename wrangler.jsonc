@@ -32,8 +32,8 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "questo-devices",
-			"database_id": "87f7046e-1e85-4724-a09a-a3f81a22ab40"
+			"database_name": "arcanum-devices",
+			"database_id": "610c5482-d2f2-472d-842d-4dcfd97e8ded"
 		}
 	],
 	"durable_objects": {
