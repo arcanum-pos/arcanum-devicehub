@@ -1,4 +1,4 @@
-// questo-devicehub: the notification channel, kept deliberately separate from
+// arcanum-devicehub: the notification channel, kept deliberately separate from
 // the payment-processing worker. Owns device identity/linking (D1) and the
 // live WebSocket relay (DeviceHub Durable Object). Never touches payment
 // amounts or the transactions log — it only ever relays an event name + id;
