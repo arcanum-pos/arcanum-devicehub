@@ -7,28 +7,13 @@
 		"port": 8790,
 		"inspector_port": 9790
 	},
-	// Explicit now that a custom domain is the canonical public entry point
-	// (adding `routes` silently disables workers_dev by default otherwise —
-	// pinned here so a future deploy can't silently re-enable it, same
-	// reasoning as arcanum-backend's own workers_dev: false).
+	// No custom domain and no workers.dev route: every path here, including
+	// the notification WebSocket (/devices/connect), is reached only through
+	// arcanum-bff's ARCANUM_DEVICEHUB_SERVICE binding now — see that repo's
+	// index.ts. Explicit false (not just omitted), same reasoning as
+	// arcanum-backend's own workers_dev: false — it defaults to true when
+	// unset, so a future deploy can't silently re-expose this Worker.
 	"workers_dev": false,
-	"routes": [
-		{
-			"pattern": "arcanum-devicehub.kaboutersoft.be",
-			"custom_domain": true
-		}
-	],
-	"vars": {
-		// Base URL this Worker is reachable at — used to build the ws:// URL
-		// handed back to clients. Verify this matches the actual deployed URL
-		// after any future rename (Workers & Pages → arcanum-devicehub → the
-		// custom domain or workers.dev URL shown there) and update + redeploy
-		// if it doesn't — a stale value here fails silently: the client just
-		// can't open its notification socket, so it never appears "online"
-		// anywhere (e.g. kassa Settings' device-link list, which only shows
-		// devices with a live socket — see listUnlinked).
-		"WORKER_PUBLIC_URL": "https://arcanum-devicehub.kaboutersoft.be"
-	},
 	"d1_databases": [
 		{
 			"binding": "DB",

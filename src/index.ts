@@ -5,6 +5,13 @@
 // every real read/write still goes back through the BFF with a full session
 // check. See LOCAL_DEV.md at the repo root for how this fits with the other
 // three Workers.
+//
+// Not publicly reachable (workers_dev: false, no routes) — every path here,
+// including /devices/connect (the WebSocket itself), is reached only
+// through arcanum-bff's service binding. That's what lets the notification
+// socket follow whichever hostname the browser is actually on (the shared
+// default domain, or an org's own custom domain) instead of a separate
+// arcanum-devicehub.kaboutersoft.be hostname.
 
 export interface Env {
   DB: D1Database;
@@ -15,9 +22,6 @@ export interface Env {
   // every other route here, and distinct from WS_TOKEN_SECRET (that one only
   // ever admits a socket, this one authorizes triggering a push).
   INTERNAL_API_KEY: string;
-  // Base URL this Worker is reachable at, used to build the ws:// URL handed
-  // back to POS/CFD/sim clients. Update to the real public URL on deploy.
-  WORKER_PUBLIC_URL: string;
 }
 
 type Role = 'pos' | 'cfd' | 'sim';
@@ -320,8 +324,7 @@ async function issueWsToken(request: Request, env: Env): Promise<Response> {
   if (!device) return json({ error: 'Unknown terminal_id' }, 404);
 
   const token = await mintWsToken(terminalId, device.role, env);
-  const wsUrl = `${env.WORKER_PUBLIC_URL.replace(/^http/, 'ws')}/devices/connect`;
-  return json({ token, wsUrl });
+  return json({ token });
 }
 
 async function connectDevice(request: Request, env: Env): Promise<Response> {
