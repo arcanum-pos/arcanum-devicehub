@@ -18,7 +18,7 @@ export interface Env {
   DEVICE_HUB: DurableObjectNamespace;
   WS_TOKEN_SECRET: string;
   // Shared secret for the payment worker's server-to-server calls to
-  // /devices/broadcast — distinct from the BFF's session-based access to
+  // /devices/broadcast and /devices/broadcast-org — distinct from the BFF's session-based access to
   // every other route here, and distinct from WS_TOKEN_SECRET (that one only
   // ever admits a socket, this one authorizes triggering a push).
   INTERNAL_API_KEY: string;
@@ -251,6 +251,36 @@ async function broadcastEndpoint(request: Request, env: Env): Promise<Response> 
   return json({ ok: true });
 }
 
+// Called by the payment worker (same bearer auth as /devices/broadcast) to
+// push to every connected device of one role across a whole org — e.g.
+// `tabs_changed` to every kassa, since tabs belong to the org, not to one
+// POS. Reaches only sockets whose token carried that org_id (see
+// connectDevice). Same rule as everywhere here: an event name + ids only.
+async function broadcastOrgEndpoint(request: Request, env: Env): Promise<Response> {
+  if (!requireInternalKey(request, env)) return json({ error: 'Unauthorized' }, 401);
+
+  const body = (await request.json().catch(() => ({}))) as {
+    org_id?: string;
+    role?: string;
+    event?: string;
+    payload?: Record<string, unknown>;
+  };
+  const orgId = String(body.org_id || '');
+  const event = String(body.event || '');
+  if (!orgId || !event) return json({ error: 'org_id and event are required' }, 400);
+  const role = body.role === undefined ? 'pos' : body.role;
+  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'sim'" }, 400);
+
+  const stub = getDeviceHub(env);
+  const res = await stub.fetch('https://device-hub/notify-tag', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tag: orgTag(orgId, role), event, payload: body.payload || {} }),
+  });
+  const { delivered } = (await res.json()) as { delivered: number };
+  return json({ ok: true, delivered });
+}
+
 // --- Notification-channel tokens ---
 // Short-lived, signed, and checked with plain HMAC verification (no KV, no
 // session) — deliberately low-privilege, since this token only ever admits a
@@ -288,11 +318,15 @@ const WS_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour; client refreshes as it nears 
 interface WsTokenPayload {
   terminal_id: string;
   role: Role;
+  // The device's org, for org-wide pushes (/devices/broadcast-org). Absent
+  // in tokens minted before it existed and for a device registered before
+  // organizations did — such a socket still connects, just without the org tag.
+  org_id?: string | null;
   exp: number;
 }
 
-async function mintWsToken(terminalId: string, role: Role, env: Env): Promise<string> {
-  const payload: WsTokenPayload = { terminal_id: terminalId, role, exp: Date.now() + WS_TOKEN_TTL_MS };
+async function mintWsToken(device: DeviceRow, env: Env): Promise<string> {
+  const payload: WsTokenPayload = { terminal_id: device.terminal_id, role: device.role, org_id: device.org_id, exp: Date.now() + WS_TOKEN_TTL_MS };
   const body = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
   const sig = await hmacSign(body, env.WS_TOKEN_SECRET);
   return `${body}.${sig}`;
@@ -323,7 +357,7 @@ async function issueWsToken(request: Request, env: Env): Promise<Response> {
   const device = await getDeviceRow(env, terminalId);
   if (!device) return json({ error: 'Unknown terminal_id' }, 404);
 
-  const token = await mintWsToken(terminalId, device.role, env);
+  const token = await mintWsToken(device, env);
   return json({ token });
 }
 
@@ -336,7 +370,16 @@ async function connectDevice(request: Request, env: Env): Promise<Response> {
   const stub = getDeviceHub(env);
   const doUrl = new URL('https://device-hub/connect');
   doUrl.searchParams.set('terminal_id', payload.terminal_id);
+  if (payload.org_id && isRole(payload.role)) {
+    doUrl.searchParams.set('org_id', payload.org_id);
+    doUrl.searchParams.set('role', payload.role);
+  }
   return stub.fetch(new Request(doUrl, request));
+}
+
+// The DO tag every socket of one role in one org carries (besides its terminal id).
+function orgTag(orgId: string, role: Role): string {
+  return `org:${orgId}:${role}`;
 }
 
 function getDeviceHub(env: Env): DurableObjectStub {
@@ -374,35 +417,52 @@ export class DeviceHub implements DurableObject {
       const terminalId = url.searchParams.get('terminal_id');
       if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
 
+      // The terminal id always comes first — /presence relies on that.
+      const tags = [terminalId];
+      const orgId = url.searchParams.get('org_id');
+      const role = url.searchParams.get('role');
+      if (orgId && isRole(role)) tags.push(orgTag(orgId, role));
+
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      this.state.acceptWebSocket(server, [terminalId]);
+      this.state.acceptWebSocket(server, tags);
       return new Response(null, { status: 101, webSocket: client });
     }
 
     if (request.method === 'POST' && url.pathname === '/notify') {
       const { terminal_id, event, ...rest } = (await request.json()) as { terminal_id: string; event: string };
-      const sockets = this.state.getWebSockets(terminal_id);
-      const message = JSON.stringify({ event, ...rest });
-      for (const ws of sockets) {
-        try {
-          ws.send(message);
-        } catch {
-          // socket already gone; webSocketClose/hibernation cleans it up
-        }
-      }
-      return json({ delivered: sockets.length });
+      return json({ delivered: this.send(terminal_id, JSON.stringify({ event, ...rest })) });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/notify-tag') {
+      const { tag, event, payload } = (await request.json()) as { tag: string; event: string; payload: Record<string, unknown> };
+      return json({ delivered: this.send(tag, JSON.stringify({ event, ...payload })) });
     }
 
     if (request.method === 'GET' && url.pathname === '/presence') {
+      // First tag only: that's the terminal id; the org tag is for routing.
       const ids = new Set<string>();
       for (const ws of this.state.getWebSockets()) {
-        for (const tag of this.state.getTags(ws)) ids.add(tag);
+        const [terminalId] = this.state.getTags(ws);
+        if (terminalId) ids.add(terminalId);
       }
       return json({ connected: [...ids] });
     }
 
     return json({ error: 'Not found' }, 404);
+  }
+
+  // Sends to every socket carrying `tag`; returns how many there were.
+  private send(tag: string, message: string): number {
+    const sockets = this.state.getWebSockets(tag);
+    for (const ws of sockets) {
+      try {
+        ws.send(message);
+      } catch {
+        // socket already gone; webSocketClose/hibernation cleans it up
+      }
+    }
+    return sockets.length;
   }
 
   // Notification channel is one-way (server → client); nothing to react to here.
@@ -441,6 +501,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/reset') return await resetEndpoint(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/remove') return await removeDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast') return await broadcastEndpoint(request, env);
+      if (request.method === 'POST' && url.pathname === '/devices/broadcast-org') return await broadcastOrgEndpoint(request, env);
       if (request.method === 'GET' && url.pathname === '/devices/ws-token') return await issueWsToken(request, env);
       if (url.pathname === '/devices/connect') return await connectDevice(request, env);
 
