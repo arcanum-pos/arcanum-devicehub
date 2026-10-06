@@ -248,6 +248,13 @@ describe('device names', () => {
     expect((await call('POST', '/devices/rename', { terminal_id: randomId('x'), name: 'Y' })).status).toBe(404);
     await call('POST', '/devices/remove', { terminal_id: pos });
     expect((await env.DB.prepare('SELECT * FROM device_names WHERE terminal_id = ?').bind(pos).all()).results).toEqual([]);
+    // The linking lists carry names too (the kassa's Instellingen shows them).
+    const display = randomId('cfd');
+    await call('POST', '/devices/register', { terminal_id: display, role: 'cfd', org_id: orgId, name: 'Tablet toog' });
+    const kassa = await register('pos', orgId);
+    expect((await call('GET', `/devices/unlinked?role=cfd&org_id=${orgId}`)).body).toEqual([]); // (none online here)
+    await call('POST', '/devices/link', { pos_terminal_id: kassa, terminal_id: display });
+    expect((await call('GET', `/devices/${kassa}/linked?role=cfd`)).body).toMatchObject({ terminal_id: display, name: 'Tablet toog' });
     // A device registered without a name (as before pairing codes) has none.
     const old = await register('cfd', orgId);
     expect((await call('GET', `/devices/${old}`)).body.name).toBeNull();

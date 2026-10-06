@@ -126,10 +126,10 @@ async function listUnlinked(request: Request, env: Env): Promise<Response> {
 
   const connected = await getConnectedTerminalIds(env);
   const { results } = await env.DB.prepare(
-    'SELECT terminal_id, created_at FROM devices WHERE role = ? AND org_id = ? AND linked_to IS NULL ORDER BY created_at DESC'
+    'SELECT d.terminal_id, d.created_at, n.name FROM devices d LEFT JOIN device_names n ON n.terminal_id = d.terminal_id WHERE d.role = ? AND d.org_id = ? AND d.linked_to IS NULL ORDER BY d.created_at DESC'
   )
     .bind(role, orgId)
-    .all<{ terminal_id: string; created_at: string }>();
+    .all<{ terminal_id: string; created_at: string; name: string | null }>();
   return json((results || []).filter((r) => connected.has(r.terminal_id)));
 }
 
@@ -155,7 +155,9 @@ async function getLinkedDevice(request: Request, posTerminalId: string, env: Env
   const role = new URL(request.url).searchParams.get('role');
   if (!isLinkableRole(role)) return json({ error: "role must be 'cfd'" }, 400);
 
-  const row = await env.DB.prepare('SELECT terminal_id, role, linked_to FROM devices WHERE role = ? AND linked_to = ?')
+  const row = await env.DB.prepare(
+    'SELECT d.terminal_id, d.role, d.linked_to, n.name FROM devices d LEFT JOIN device_names n ON n.terminal_id = d.terminal_id WHERE d.role = ? AND d.linked_to = ?'
+  )
     .bind(role, posTerminalId)
     .first<DeviceRow>();
   return json(row || null);
