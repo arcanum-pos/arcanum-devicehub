@@ -5,7 +5,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-type Role = 'pos' | 'cfd' | 'sim';
+type Role = 'pos' | 'cfd';
 
 function randomId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -181,5 +181,26 @@ describe('presence', () => {
     expect(presence.connected.some((id) => id.startsWith('org:'))).toBe(false);
     pos.socket.close();
     cfd.socket.close();
+  });
+});
+
+// The SumUp simulator ('sim') was removed on 2026-10-06: no new one, but an
+// old registration is still listed and can be removed.
+describe('the former simulator role', () => {
+  it('is no longer registered or linked', async () => {
+    const orgId = randomId('org');
+    expect((await call('POST', '/devices/register', { terminal_id: randomId('sim'), role: 'sim', org_id: orgId })).status).toBe(400);
+    const pos = await register('pos', orgId);
+    expect((await call('GET', `/devices/unlinked?role=sim&org_id=${orgId}`)).status).toBe(400);
+    expect((await call('GET', `/devices/${pos}/linked?role=sim`)).status).toBe(400);
+  });
+
+  it('an old registration is still listed, and can be removed', async () => {
+    const orgId = randomId('org');
+    const old = randomId('sim');
+    await env.DB.prepare("INSERT INTO devices (terminal_id, org_id, role, created_at) VALUES (?, ?, 'sim', datetime('now'))").bind(old, orgId).run();
+    expect((await call('GET', `/devices/by-org/${orgId}`)).body.map((d: any) => [d.terminal_id, d.role])).toEqual([[old, 'sim']]);
+    expect((await call('POST', '/devices/remove', { terminal_id: old })).status).toBe(200);
+    expect((await call('GET', `/devices/by-org/${orgId}`)).body).toEqual([]);
   });
 });
