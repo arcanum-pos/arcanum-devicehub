@@ -11,7 +11,10 @@ function randomId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-async function call(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
+const INTERNAL = { Authorization: 'Bearer test-internal-key' };
+
+// As arcanum-backend calls it: with the internal key (pass {} for a caller without one).
+async function call(method: string, path: string, body?: unknown, headers: Record<string, string> = INTERNAL) {
   const res = await SELF.fetch(`https://devicehub.test${path}`, {
     method,
     headers: { 'Content-Type': 'application/json', ...headers },
@@ -20,7 +23,6 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
   return { status: res.status, body: (await res.json()) as any };
 }
 
-const INTERNAL = { Authorization: 'Bearer test-internal-key' };
 
 async function register(role: Role, orgId: string) {
   const terminalId = randomId(role);
@@ -30,7 +32,7 @@ async function register(role: Role, orgId: string) {
 }
 
 async function wsToken(terminalId: string): Promise<string> {
-  const res = await call('GET', `/devices/ws-token?terminal_id=${encodeURIComponent(terminalId)}`);
+  const res = await call('GET', `/devices/ws-token?terminal_id=${encodeURIComponent(terminalId)}`, undefined, {});
   expect(res.status).toBe(200);
   return res.body.token;
 }
@@ -202,5 +204,52 @@ describe('the former simulator role', () => {
     expect((await call('GET', `/devices/by-org/${orgId}`)).body.map((d: any) => [d.terminal_id, d.role])).toEqual([[old, 'sim']]);
     expect((await call('POST', '/devices/remove', { terminal_id: old })).status).toBe(200);
     expect((await call('GET', `/devices/by-org/${orgId}`)).body).toEqual([]);
+  });
+});
+
+// The registry is arcanum-backend's to use (it checks who's asking); a
+// browser only gets its own socket: the token and the connection.
+describe('who may call what', () => {
+  it('every registry route refuses a caller without the internal key', async () => {
+    const orgId = randomId('org');
+    const pos = await register('pos', orgId);
+    const cases: [string, string, unknown?][] = [
+      ['POST', '/devices/register', { terminal_id: randomId('pos'), role: 'pos', org_id: orgId }],
+      ['POST', '/devices/rename', { terminal_id: pos, name: 'X' }],
+      ['GET', `/devices/by-org/${orgId}`],
+      ['GET', `/devices/${pos}`],
+      ['GET', `/devices/${pos}/linked?role=cfd`],
+      ['GET', `/devices/unlinked?role=cfd&org_id=${orgId}`],
+      ['POST', '/devices/link', { pos_terminal_id: pos, terminal_id: pos }],
+      ['POST', '/devices/unlink', { terminal_id: pos }],
+      ['POST', '/devices/reset', { pos_terminal_id: pos }],
+      ['POST', '/devices/remove', { terminal_id: pos }],
+    ];
+    for (const [method, path, body] of cases) {
+      expect((await call(method, path, body, {})).status, `${method} ${path}`).toBe(401);
+      expect((await call(method, path, body, { Authorization: 'Bearer wrong' })).status, `${method} ${path} wrong key`).toBe(401);
+    }
+    expect((await call('GET', `/devices/${pos}`)).status).toBe(200);
+  });
+
+  it('a device gets its socket token without the key', async () => {
+    const pos = await register('pos', randomId('org'));
+    expect((await call('GET', `/devices/ws-token?terminal_id=${pos}`, undefined, {})).status).toBe(200);
+  });
+});
+
+describe('device names', () => {
+  it('from the registration, renamed later, listed, and gone with the device', async () => {
+    const orgId = randomId('org');
+    const pos = randomId('pos');
+    expect((await call('POST', '/devices/register', { terminal_id: pos, role: 'pos', org_id: orgId, name: ' Kassa 1 ' })).body).toMatchObject({ terminal_id: pos, name: 'Kassa 1' });
+    expect((await call('POST', '/devices/rename', { terminal_id: pos, name: 'Toog' })).body.name).toBe('Toog');
+    expect((await call('GET', `/devices/by-org/${orgId}`)).body).toMatchObject([{ terminal_id: pos, name: 'Toog' }]);
+    expect((await call('POST', '/devices/rename', { terminal_id: randomId('x'), name: 'Y' })).status).toBe(404);
+    await call('POST', '/devices/remove', { terminal_id: pos });
+    expect((await env.DB.prepare('SELECT * FROM device_names WHERE terminal_id = ?').bind(pos).all()).results).toEqual([]);
+    // A device registered without a name (as before pairing codes) has none.
+    const old = await register('cfd', orgId);
+    expect((await call('GET', `/devices/${old}`)).body.name).toBeNull();
   });
 });

@@ -35,6 +35,7 @@ interface DeviceRow {
   org_id: string | null;
   role: Role;
   linked_to: string | null;
+  name?: string | null;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -60,10 +61,11 @@ function isLinkableRole(value: string | null): value is 'cfd' {
 // --- Device registry (D1) ---
 
 async function registerDevice(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string; role?: string; org_id?: string };
+  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string; role?: string; org_id?: string; name?: string };
   const terminalId = String(body.terminal_id || '');
   const role = body.role || '';
   const orgId = String(body.org_id || '');
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : '';
 
   if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
   if (!isRole(role)) return json({ error: "role must be 'pos' or 'cfd'" }, 400);
@@ -74,13 +76,33 @@ async function registerDevice(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare('INSERT INTO devices (terminal_id, org_id, role, linked_to, created_at) VALUES (?, ?, ?, NULL, ?)')
       .bind(terminalId, orgId, role, new Date().toISOString())
       .run();
+    if (name) await setDeviceName(env, terminalId, name);
   }
 
   return json(await getDeviceRow(env, terminalId));
 }
 
+// A device's name ("Kassa 1"), from its pairing code or renamed since.
+async function setDeviceName(env: Env, terminalId: string, name: string) {
+  await env.DB.prepare('INSERT INTO device_names (terminal_id, name, updated_at) VALUES (?, ?, ?) ON CONFLICT(terminal_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at')
+    .bind(terminalId, name, new Date().toISOString())
+    .run();
+}
+
+async function renameDevice(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string; name?: string };
+  const terminalId = String(body.terminal_id || '');
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : '';
+  if (!terminalId || !name) return json({ error: 'terminal_id and name are required' }, 400);
+  if (!(await getDeviceRow(env, terminalId))) return json({ error: 'Unknown terminal_id' }, 404);
+  await setDeviceName(env, terminalId, name);
+  return json(await getDeviceRow(env, terminalId));
+}
+
 async function getDeviceRow(env: Env, terminalId: string): Promise<DeviceRow | null> {
-  return env.DB.prepare('SELECT terminal_id, org_id, role, linked_to FROM devices WHERE terminal_id = ?')
+  return env.DB.prepare(
+    'SELECT d.terminal_id, d.org_id, d.role, d.linked_to, n.name FROM devices d LEFT JOIN device_names n ON n.terminal_id = d.terminal_id WHERE d.terminal_id = ?'
+  )
     .bind(terminalId)
     .first<DeviceRow>();
 }
@@ -119,9 +141,11 @@ async function listUnlinked(request: Request, env: Env): Promise<Response> {
 async function listByOrg(orgId: string, env: Env): Promise<Response> {
   const [connected, { results }] = await Promise.all([
     getConnectedTerminalIds(env),
-    env.DB.prepare('SELECT terminal_id, role, linked_to, created_at FROM devices WHERE org_id = ? ORDER BY created_at DESC')
+    env.DB.prepare(
+      'SELECT d.terminal_id, d.role, d.linked_to, d.created_at, n.name FROM devices d LEFT JOIN device_names n ON n.terminal_id = d.terminal_id WHERE d.org_id = ? ORDER BY d.created_at DESC'
+    )
       .bind(orgId)
-      .all<{ terminal_id: string; role: Role; linked_to: string | null; created_at: string }>(),
+      .all<{ terminal_id: string; role: Role; linked_to: string | null; created_at: string; name: string | null }>(),
   ]);
   const withStatus = (results || []).map((r) => ({ ...r, online: connected.has(r.terminal_id) }));
   return json(withStatus);
@@ -202,6 +226,7 @@ async function removeDevice(request: Request, env: Env): Promise<Response> {
   // POS doesn't leave a CFD/sim dangling off an id that no longer exists.
   await env.DB.prepare('UPDATE devices SET linked_to = NULL WHERE linked_to = ?').bind(terminalId).run();
   await env.DB.prepare('DELETE FROM devices WHERE terminal_id = ?').bind(terminalId).run();
+  await env.DB.prepare('DELETE FROM device_names WHERE terminal_id = ?').bind(terminalId).run();
   return json({ ok: true });
 }
 
@@ -496,7 +521,17 @@ export default {
     const url = new URL(request.url);
 
     try {
+      // A device's own notification socket: its token, then the socket itself.
+      if (request.method === 'GET' && url.pathname === '/devices/ws-token') return await issueWsToken(request, env);
+      if (url.pathname === '/devices/connect') return await connectDevice(request, env);
+
+      // Everything else is for arcanum-backend only (INTERNAL_API_KEY): it
+      // checks who's asking (devices.ts) — this Worker doesn't know people.
+      // The browser reaches the registry only through it.
+      if (!requireInternalKey(request, env)) return json({ error: 'Unauthorized' }, 401);
+
       if (request.method === 'POST' && url.pathname === '/devices/register') return await registerDevice(request, env);
+      if (request.method === 'POST' && url.pathname === '/devices/rename') return await renameDevice(request, env);
       if (request.method === 'GET' && url.pathname === '/devices/unlinked') return await listUnlinked(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/link') return await linkDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/unlink') return await unlinkDevice(request, env);
@@ -504,9 +539,6 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/remove') return await removeDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast') return await broadcastEndpoint(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast-org') return await broadcastOrgEndpoint(request, env);
-      if (request.method === 'GET' && url.pathname === '/devices/ws-token') return await issueWsToken(request, env);
-      if (url.pathname === '/devices/connect') return await connectDevice(request, env);
-
       const byOrgMatch = url.pathname.match(/^\/devices\/by-org\/([^/]+)$/);
       if (request.method === 'GET' && byOrgMatch) return await listByOrg(decodeURIComponent(byOrgMatch[1]), env);
 
