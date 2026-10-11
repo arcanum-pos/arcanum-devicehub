@@ -5,7 +5,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-type Role = 'pos' | 'cfd';
+type Role = 'pos' | 'cfd' | 'station';
 
 function randomId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -258,5 +258,57 @@ describe('device names', () => {
     // A device registered without a name (as before pairing codes) has none.
     const old = await register('cfd', orgId);
     expect((await call('GET', `/devices/${old}`)).body.name).toBeNull();
+  });
+});
+
+describe('station screens and the order hub (self-ordering)', () => {
+  async function connectOrder(ticket: string): Promise<Socket> {
+    const res = await SELF.fetch(`https://devicehub.test/orders/connect?ticket=${encodeURIComponent(ticket)}`, { headers: { Upgrade: 'websocket' } });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket!;
+    ws.accept();
+    const messages: any[] = [];
+    ws.addEventListener('message', (e) => messages.push(JSON.parse(e.data as string)));
+    return { messages, close: () => ws.close() };
+  }
+  const ticketFor = async (orgId: string, tabId: string) => (await call('POST', '/orders/ticket', { org_id: orgId, tab_id: tabId })).body.ticket as string;
+
+  it("a tab change reaches the org's kassas and station screens, and the pages following that tab — nobody else", async () => {
+    const orgId = randomId('org');
+    const pos = await connectDevice('pos', orgId);
+    const station = await connectDevice('station', orgId);
+    const cfd = await connectDevice('cfd', orgId);
+    const otherStation = await connectDevice('station', randomId('org'));
+    const follower = await connectOrder(await ticketFor(orgId, 'tab-1'));
+    const otherTab = await connectOrder(await ticketFor(orgId, 'tab-2'));
+
+    const res = await call('POST', '/devices/tabs-changed', { org_id: orgId, tab_ids: ['tab-1'] });
+    expect(res.body).toEqual({ ok: true, devices: 2, followers: 1 });
+    await settle();
+    expect(pos.socket.messages).toEqual([{ event: 'tabs_changed', tab_id: 'tab-1' }]);
+    expect(station.socket.messages).toEqual([{ event: 'tabs_changed', tab_id: 'tab-1' }]);
+    expect(follower.messages).toEqual([{ event: 'order_updated' }]);
+    expect(cfd.socket.messages).toEqual([]);
+    expect(otherStation.socket.messages).toEqual([]);
+    expect(otherTab.messages).toEqual([]);
+    for (const s of [pos.socket, station.socket, cfd.socket, otherStation.socket, follower, otherTab]) s.close();
+  });
+
+  it('tickets only for arcanum-backend; a device token is no ticket, nor a forged or expired one', async () => {
+    expect((await call('POST', '/orders/ticket', { org_id: 'o', tab_id: 't' }, {})).status).toBe(401);
+    expect((await call('POST', '/devices/tabs-changed', { org_id: 'o', tab_ids: ['t'] }, {})).status).toBe(401);
+    const deviceToken = await wsToken(await register('station', randomId('org')));
+    const refused = async (ticket: string) => (await SELF.fetch(`https://devicehub.test/orders/connect?ticket=${encodeURIComponent(ticket)}`, { headers: { Upgrade: 'websocket' } })).status;
+    expect(await refused(deviceToken)).toBe(401);
+    expect(await refused('nope.nope')).toBe(401);
+    const ticket = await ticketFor('o', 't');
+    const [body] = ticket.split('.');
+    expect(await refused(`${body}.forged`)).toBe(401);
+  });
+
+  it('registers a station screen as a device', async () => {
+    const orgId = randomId('org');
+    const station = await register('station', orgId);
+    expect((await call('GET', `/devices/${station}`)).body).toMatchObject({ role: 'station', org_id: orgId });
   });
 });

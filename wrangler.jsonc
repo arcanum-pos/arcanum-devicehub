@@ -33,6 +33,11 @@
 			{
 				"name": "DEVICE_HUB",
 				"class_name": "DeviceHub"
+			},
+			// Guests' "follow your order" pages (self-ordering, 2026-10-11): one per org.
+			{
+				"name": "ORDER_HUB",
+				"class_name": "OrderHub"
 			}
 		]
 	},
@@ -65,6 +70,12 @@
 			"tag": "v3",
 			"new_sqlite_classes": [
 				"DeviceHub"
+			]
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": [
+				"OrderHub"
 			]
 		}
 	],

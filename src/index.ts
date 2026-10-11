@@ -16,6 +16,8 @@
 export interface Env {
   DB: D1Database;
   DEVICE_HUB: DurableObjectNamespace;
+  // The order hub (OrderHub below): "follow your order" pages of guests, one per org.
+  ORDER_HUB: DurableObjectNamespace;
   WS_TOKEN_SECRET: string;
   // Shared secret for the payment worker's server-to-server calls to
   // /devices/broadcast and /devices/broadcast-org — distinct from the BFF's session-based access to
@@ -26,8 +28,9 @@ export interface Env {
 
 // 'sim' (the SumUp simulator) was a role until 2026-10-06: an old row may
 // still have it — listed, removable, but no new one is registered or linked.
-type Role = 'pos' | 'cfd';
-const DEVICE_ROLES = new Set<Role>(['pos', 'cfd']);
+// 'station': a station screen (prep tickets of one station, 2026-10-11).
+type Role = 'pos' | 'cfd' | 'station';
+const DEVICE_ROLES = new Set<Role>(['pos', 'cfd', 'station']);
 const LINKABLE_ROLES = new Set<Role>(['cfd']);
 
 interface DeviceRow {
@@ -68,7 +71,7 @@ async function registerDevice(request: Request, env: Env): Promise<Response> {
   const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : '';
 
   if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
-  if (!isRole(role)) return json({ error: "role must be 'pos' or 'cfd'" }, 400);
+  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'station'" }, 400);
   if (!orgId) return json({ error: 'org_id is required' }, 400);
 
   const existing = await getDeviceRow(env, terminalId);
@@ -298,7 +301,7 @@ async function broadcastOrgEndpoint(request: Request, env: Env): Promise<Respons
   const event = String(body.event || '');
   if (!orgId || !event) return json({ error: 'org_id and event are required' }, 400);
   const role = body.role === undefined ? 'pos' : body.role;
-  if (!isRole(role)) return json({ error: "role must be 'pos' or 'cfd'" }, 400);
+  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'station'" }, 400);
 
   const stub = getDeviceHub(env);
   const res = await stub.fetch('https://device-hub/notify-tag', {
@@ -308,6 +311,37 @@ async function broadcastOrgEndpoint(request: Request, env: Env): Promise<Respons
   });
   const { delivered } = (await res.json()) as { delivered: number };
   return json({ ok: true, delivered });
+}
+
+// After any change to a tab (arcanum-backend's notifyTabChanged): every kassa
+// and station screen of the org gets `tabs_changed { tab_id }`, and every
+// "follow your order" page of one of these tabs gets `order_updated` (the
+// order hub). One call from the backend, whatever is listening.
+async function tabsChangedEndpoint(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { org_id?: string; tab_ids?: unknown };
+  const orgId = String(body.org_id || '');
+  const tabIds = Array.isArray(body.tab_ids) ? body.tab_ids.filter((t): t is string => typeof t === 'string' && !!t).slice(0, 100) : [];
+  if (!orgId || !tabIds.length) return json({ error: 'org_id and tab_ids are required' }, 400);
+
+  const hub = getDeviceHub(env);
+  let devices = 0;
+  for (const tabId of tabIds) {
+    for (const role of ['pos', 'station'] as const) {
+      const res = await hub.fetch('https://device-hub/notify-tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tag: orgTag(orgId, role), event: 'tabs_changed', payload: { tab_id: tabId } }),
+      });
+      devices += ((await res.json()) as { delivered: number }).delivered;
+    }
+  }
+  const res = await getOrderHub(env, orgId).fetch('https://order-hub/notify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tab_ids: tabIds }),
+  });
+  const { delivered: followers } = (await res.json()) as { delivered: number };
+  return json({ ok: true, devices, followers });
 }
 
 // --- Notification-channel tokens ---
@@ -404,6 +438,59 @@ async function connectDevice(request: Request, env: Env): Promise<Response> {
     doUrl.searchParams.set('role', payload.role);
   }
   return stub.fetch(new Request(doUrl, request));
+}
+
+// --- The order hub: "follow your order" pages ---
+// A guest's phone isn't a device: it's admitted by a ticket for one tab,
+// which arcanum-backend asks for (internal key) when it serves that tab's
+// public status (the guest showed the tab's unguessable token). Signed like
+// the device tokens, but a different kind (`kind: 'order'`), so neither can
+// stand in for the other. Only `order_updated` ever goes over it — the page
+// then fetches the status itself.
+
+const ORDER_TICKET_TTL_MS = 2 * 60 * 60 * 1000; // a page reconnecting later fetches the status again, with a new ticket
+
+interface OrderTicketPayload {
+  kind: 'order';
+  org_id: string;
+  tab_id: string;
+  exp: number;
+}
+
+async function orderTicketEndpoint(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { org_id?: string; tab_id?: string };
+  const orgId = String(body.org_id || '');
+  const tabId = String(body.tab_id || '');
+  if (!orgId || !tabId) return json({ error: 'org_id and tab_id are required' }, 400);
+  const payload: OrderTicketPayload = { kind: 'order', org_id: orgId, tab_id: tabId, exp: Date.now() + ORDER_TICKET_TTL_MS };
+  const encoded = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
+  return json({ ticket: `${encoded}.${await hmacSign(encoded, env.WS_TOKEN_SECRET)}` });
+}
+
+async function verifyOrderTicket(ticket: string | null, env: Env): Promise<OrderTicketPayload | null> {
+  if (!ticket || !env.WS_TOKEN_SECRET) return null;
+  const [body, sig] = ticket.split('.');
+  if (!body || !sig || !timingSafeEqual(await hmacSign(body, env.WS_TOKEN_SECRET), sig)) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(body))) as OrderTicketPayload;
+    if (payload.kind !== 'order' || !payload.org_id || !payload.tab_id || !payload.exp || Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function connectOrder(request: Request, env: Env): Promise<Response> {
+  const payload = await verifyOrderTicket(new URL(request.url).searchParams.get('ticket'), env);
+  if (!payload) return json({ error: 'Invalid or expired ticket' }, 401);
+  if (request.headers.get('Upgrade') !== 'websocket') return json({ error: 'Expected websocket upgrade' }, 426);
+  const doUrl = new URL('https://order-hub/connect');
+  doUrl.searchParams.set('tab_id', payload.tab_id);
+  return getOrderHub(env, payload.org_id).fetch(new Request(doUrl, request));
+}
+
+function getOrderHub(env: Env, orgId: string): DurableObjectStub {
+  return env.ORDER_HUB.get(env.ORDER_HUB.idFromName(`org:${orgId}`));
 }
 
 // The DO tag every socket of one role in one org carries (besides its terminal id).
@@ -514,6 +601,69 @@ export class DeviceHub implements DurableObject {
   }
 }
 
+// --- OrderHub Durable Object ---
+// One per org: the "follow your order" pages of its guests, each socket
+// tagged with its tab id. Hibernating (like DeviceHub): a page waiting for
+// its order costs nothing while nothing happens. At most MAX_FOLLOWERS
+// sockets — a cost/abuse brake (the safety belt): beyond it a page still
+// shows its status, just without live updates.
+const MAX_FOLLOWERS = 2000;
+
+export class OrderHub implements DurableObject {
+  constructor(private state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/connect') {
+      const tabId = url.searchParams.get('tab_id');
+      if (!tabId) return json({ error: 'tab_id is required' }, 400);
+      if (this.state.getWebSockets().length >= MAX_FOLLOWERS) return json({ error: 'Too many followers' }, 503);
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      this.state.acceptWebSocket(server, [tabId]);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/notify') {
+      const { tab_ids } = (await request.json()) as { tab_ids: string[] };
+      let delivered = 0;
+      for (const tabId of tab_ids) {
+        for (const ws of this.state.getWebSockets(tabId)) {
+          try {
+            ws.send(JSON.stringify({ event: 'order_updated' }));
+            delivered++;
+          } catch {
+            // socket already gone
+          }
+        }
+      }
+      return json({ delivered });
+    }
+
+    return json({ error: 'Not found' }, 404);
+  }
+
+  // One-way (server → page); nothing to react to.
+  async webSocketMessage() {}
+
+  async webSocketClose(ws: WebSocket, code: number, reason: string) {
+    try {
+      ws.close(code, reason);
+    } catch {
+      // already closing
+    }
+  }
+
+  async webSocketError(ws: WebSocket) {
+    try {
+      ws.close(1011, 'error');
+    } catch {
+      // already closing
+    }
+  }
+}
+
 // --- Routing ---
 
 export default {
@@ -526,6 +676,8 @@ export default {
       // A device's own notification socket: its token, then the socket itself.
       if (request.method === 'GET' && url.pathname === '/devices/ws-token') return await issueWsToken(request, env);
       if (url.pathname === '/devices/connect') return await connectDevice(request, env);
+      // A guest's "follow your order" page: its ticket, then the socket.
+      if (url.pathname === '/orders/connect') return await connectOrder(request, env);
 
       // Everything else is for arcanum-backend only (INTERNAL_API_KEY): it
       // checks who's asking (devices.ts) — this Worker doesn't know people.
@@ -541,6 +693,8 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/remove') return await removeDevice(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast') return await broadcastEndpoint(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/broadcast-org') return await broadcastOrgEndpoint(request, env);
+      if (request.method === 'POST' && url.pathname === '/devices/tabs-changed') return await tabsChangedEndpoint(request, env);
+      if (request.method === 'POST' && url.pathname === '/orders/ticket') return await orderTicketEndpoint(request, env);
       const byOrgMatch = url.pathname.match(/^\/devices\/by-org\/([^/]+)$/);
       if (request.method === 'GET' && byOrgMatch) return await listByOrg(decodeURIComponent(byOrgMatch[1]), env);
 
