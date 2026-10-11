@@ -1,5 +1,20 @@
 # arcanum-devicehub
 
+The notification channel: device identity (kassa `pos`, customer display
+`cfd`, station screen `station`) and two hibernating Durable Objects that
+only ever relay an event name + id — the data is always fetched separately:
+
+- **DeviceHub** (one): the devices' sockets (`/devices/connect`, a signed
+  device token), tagged per org and role.
+- **OrderHub** (one per org, 2026-10-11): guests' "follow your order" pages
+  (`/orders/connect`, a signed ticket for one tab that arcanum-backend asks
+  for with `/orders/ticket`), at most 2000 sockets.
+
+`/devices/tabs-changed` (arcanum-backend, internal key) tells both at once:
+`tabs_changed` to the org's kassas and station screens, `order_updated` to
+the pages following those tabs. DOMAIN_MODEL.md "Self-ordering and station
+screens".
+
 ## License
 
 Copyright (C) 2026 kaboutersoft.be
