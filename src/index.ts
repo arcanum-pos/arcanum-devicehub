@@ -424,6 +424,17 @@ async function issueWsToken(request: Request, env: Env): Promise<Response> {
   return json({ token });
 }
 
+// A signed-in member's page that isn't a device — the waiter screen on a
+// waiter's own phone (arcanum-backend checked the role): a token for the
+// organisation's kassa channel (tabs_changed and the like), under a
+// throwaway terminal id that no device has.
+async function issueMemberWsToken(request: Request, env: Env): Promise<Response> {
+  const body = (await request.json().catch(() => ({}))) as { org_id?: string };
+  if (!body.org_id) return json({ error: 'org_id is required' }, 400);
+  const token = await mintWsToken({ terminal_id: `member-${crypto.randomUUID()}`, org_id: body.org_id, role: 'pos', linked_to: null } as DeviceRow, env);
+  return json({ token });
+}
+
 async function connectDevice(request: Request, env: Env): Promise<Response> {
   const token = new URL(request.url).searchParams.get('token');
   const payload = await verifyWsToken(token, env);
@@ -695,6 +706,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/broadcast-org') return await broadcastOrgEndpoint(request, env);
       if (request.method === 'POST' && url.pathname === '/devices/tabs-changed') return await tabsChangedEndpoint(request, env);
       if (request.method === 'POST' && url.pathname === '/orders/ticket') return await orderTicketEndpoint(request, env);
+      if (request.method === 'POST' && url.pathname === '/devices/member-ws-token') return await issueMemberWsToken(request, env);
       const byOrgMatch = url.pathname.match(/^\/devices\/by-org\/([^/]+)$/);
       if (request.method === 'GET' && byOrgMatch) return await listByOrg(decodeURIComponent(byOrgMatch[1]), env);
 

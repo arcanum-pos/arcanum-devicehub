@@ -312,3 +312,21 @@ describe('station screens and the order hub (self-ordering)', () => {
     expect((await call('GET', `/devices/${station}`)).body).toMatchObject({ role: 'station', org_id: orgId });
   });
 });
+
+describe("a signed-in member's page (the waiter screen, release C)", () => {
+  it("gets a token for its organisation's kassa channel — only from arcanum-backend (the internal key)", async () => {
+    const orgId = randomId('org');
+    expect((await call('POST', '/devices/member-ws-token', { org_id: orgId }, {})).status).toBe(401);
+    expect((await call('POST', '/devices/member-ws-token', {})).status).toBe(400);
+    const res = await call('POST', '/devices/member-ws-token', { org_id: orgId });
+    expect(tokenPayload(res.body.token)).toMatchObject({ role: 'pos', org_id: orgId, terminal_id: expect.stringMatching(/^member-/) });
+    const waiter = await connect(res.body.token);
+    const otherOrg = await connect((await call('POST', '/devices/member-ws-token', { org_id: randomId('org') })).body.token);
+    await broadcastOrg({ org_id: orgId, event: 'tabs_changed', payload: { tab_id: 't1' } });
+    await settle();
+    expect(waiter.messages).toEqual([{ event: 'tabs_changed', tab_id: 't1' }]);
+    expect(otherOrg.messages).toEqual([]);
+    waiter.close();
+    otherOrg.close();
+  });
+});
