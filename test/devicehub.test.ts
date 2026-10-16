@@ -5,7 +5,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-type Role = 'pos' | 'cfd' | 'station';
+type Role = 'pos' | 'cfd' | 'station' | 'tap';
 
 function randomId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -258,6 +258,27 @@ describe('device names', () => {
     // A device registered without a name (as before pairing codes) has none.
     const old = await register('cfd', orgId);
     expect((await call('GET', `/devices/${old}`)).body.name).toBeNull();
+  });
+});
+
+describe("a kassa's Tap to Pay phone", () => {
+  it('is linked like a customer display and hears the same payment events, next to it', async () => {
+    const orgId = randomId('org');
+    const pos = await connectDevice('pos', orgId);
+    const cfd = await connectDevice('cfd', orgId);
+    const tap = await connectDevice('tap', orgId);
+    const otherTap = await connectDevice('tap', orgId);
+    expect((await call('POST', '/devices/link', { pos_terminal_id: pos.terminalId, terminal_id: cfd.terminalId })).status).toBe(200);
+    expect((await call('POST', '/devices/link', { pos_terminal_id: pos.terminalId, terminal_id: tap.terminalId })).status).toBe(200);
+    expect((await call('GET', `/devices/${pos.terminalId}/linked?role=tap`)).body).toMatchObject({ terminal_id: tap.terminalId });
+    expect((await call('GET', `/devices/${pos.terminalId}/linked?role=cfd`)).body).toMatchObject({ terminal_id: cfd.terminalId });
+    await settle();
+    for (const d of [pos, cfd, tap, otherTap]) d.socket.messages.length = 0;
+    await call('POST', '/devices/broadcast', { pos_terminal_id: pos.terminalId, event: 'payment_updated', payload: { payment_id: 'c1', method: 'sumup' } });
+    await settle();
+    for (const d of [pos, cfd, tap]) expect(d.socket.messages).toEqual([{ event: 'payment_updated', payment_id: 'c1', method: 'sumup' }]);
+    expect(otherTap.socket.messages).toEqual([]);
+    for (const d of [pos, cfd, tap, otherTap]) d.socket.close();
   });
 });
 

@@ -29,9 +29,11 @@ export interface Env {
 // 'sim' (the SumUp simulator) was a role until 2026-10-06: an old row may
 // still have it — listed, removable, but no new one is registered or linked.
 // 'station': a station screen (prep tickets of one station, 2026-10-11).
-type Role = 'pos' | 'cfd' | 'station';
-const DEVICE_ROLES = new Set<Role>(['pos', 'cfd', 'station']);
-const LINKABLE_ROLES = new Set<Role>(['cfd']);
+// 'tap': a kassa's Tap to Pay phone (2026-10-16) — linked to its kassa like
+// a customer display, so it hears the kassa's payment events too.
+type Role = 'pos' | 'cfd' | 'station' | 'tap';
+const DEVICE_ROLES = new Set<Role>(['pos', 'cfd', 'station', 'tap']);
+const LINKABLE_ROLES = new Set<Role>(['cfd', 'tap']);
 
 interface DeviceRow {
   terminal_id: string;
@@ -57,7 +59,7 @@ function isRole(value: string | null): value is Role {
   return value !== null && DEVICE_ROLES.has(value as Role);
 }
 
-function isLinkableRole(value: string | null): value is 'cfd' {
+function isLinkableRole(value: string | null): value is 'cfd' | 'tap' {
   return value !== null && LINKABLE_ROLES.has(value as Role);
 }
 
@@ -71,7 +73,7 @@ async function registerDevice(request: Request, env: Env): Promise<Response> {
   const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : '';
 
   if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
-  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'station'" }, 400);
+  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd', 'station' or 'tap'" }, 400);
   if (!orgId) return json({ error: 'org_id is required' }, 400);
 
   const existing = await getDeviceRow(env, terminalId);
@@ -124,7 +126,7 @@ async function listUnlinked(request: Request, env: Env): Promise<Response> {
   const params = new URL(request.url).searchParams;
   const role = params.get('role');
   const orgId = params.get('org_id');
-  if (!isLinkableRole(role)) return json({ error: "role must be 'cfd'" }, 400);
+  if (!isLinkableRole(role)) return json({ error: "role must be 'cfd' or 'tap'" }, 400);
   if (!orgId) return json({ error: 'org_id is required' }, 400);
 
   const connected = await getConnectedTerminalIds(env);
@@ -156,7 +158,7 @@ async function listByOrg(orgId: string, env: Env): Promise<Response> {
 
 async function getLinkedDevice(request: Request, posTerminalId: string, env: Env): Promise<Response> {
   const role = new URL(request.url).searchParams.get('role');
-  if (!isLinkableRole(role)) return json({ error: "role must be 'cfd'" }, 400);
+  if (!isLinkableRole(role)) return json({ error: "role must be 'cfd' or 'tap'" }, 400);
 
   const row = await env.DB.prepare(
     'SELECT d.terminal_id, d.role, d.linked_to, n.name FROM devices d LEFT JOIN device_names n ON n.terminal_id = d.terminal_id WHERE d.role = ? AND d.linked_to = ?'
@@ -301,7 +303,7 @@ async function broadcastOrgEndpoint(request: Request, env: Env): Promise<Respons
   const event = String(body.event || '');
   if (!orgId || !event) return json({ error: 'org_id and event are required' }, 400);
   const role = body.role === undefined ? 'pos' : body.role;
-  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd' or 'station'" }, 400);
+  if (!isRole(role)) return json({ error: "role must be 'pos', 'cfd', 'station' or 'tap'" }, 400);
 
   const stub = getDeviceHub(env);
   const res = await stub.fetch('https://device-hub/notify-tag', {
