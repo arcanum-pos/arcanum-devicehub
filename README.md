@@ -31,3 +31,15 @@ hosting or support — but if you run a modified version for users over a
 network, you must offer those users its source code (AGPL §13). The app's
 "Broncode" link (the `SOURCE_URL` setting of arcanum-bff) is how an
 installation points its users to that source.
+
+## Self-hosted (SELF_HOSTING.md)
+
+The same Worker code runs on Node (`src/node.ts`): `npm run build:node`,
+then `node dist/node.js` with `WS_TOKEN_SECRET`, `INTERNAL_API_KEY`,
+`DEVICEHUB_DB` (its SQLite file) and `PORT`. The registry is D1 on SQLite
+(`src/node/d1.ts`, the schema applied at start); DeviceHub and OrderHub live
+in the process (`src/node/durable-objects.ts`, one replica). Sockets arrive
+as HTTP upgrades and are admitted by the same checks as on Cloudflare
+(`deviceSocket` / `orderSocket`), with the same tags. `npm test` runs the
+Worker tests in the Workers runtime and `test/node/` on Node — real
+WebSockets included.

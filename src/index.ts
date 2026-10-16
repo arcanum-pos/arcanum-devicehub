@@ -31,7 +31,7 @@ export interface Env {
 // 'station': a station screen (prep tickets of one station, 2026-10-11).
 // 'tap': a kassa's Tap to Pay phone (2026-10-16) — linked to its kassa like
 // a customer display, so it hears the kassa's payment events too.
-type Role = 'pos' | 'cfd' | 'station' | 'tap';
+export type Role = 'pos' | 'cfd' | 'station' | 'tap';
 const DEVICE_ROLES = new Set<Role>(['pos', 'cfd', 'station', 'tap']);
 const LINKABLE_ROLES = new Set<Role>(['cfd', 'tap']);
 
@@ -437,20 +437,33 @@ async function issueMemberWsToken(request: Request, env: Env): Promise<Response>
   return json({ token });
 }
 
-async function connectDevice(request: Request, env: Env): Promise<Response> {
+// Who a device's socket belongs to — or why it's refused. Shared by the
+// Worker (below: on to the DeviceHub object) and the self-hosted server
+// (node.ts: into its own hub), so both admit exactly the same sockets.
+export async function deviceSocket(request: Request, env: Env): Promise<{ terminalId: string; orgId?: string; role?: Role } | Response> {
   const token = new URL(request.url).searchParams.get('token');
   const payload = await verifyWsToken(token, env);
   if (!payload) return json({ error: 'Invalid or expired token' }, 401);
-  if (request.headers.get('Upgrade') !== 'websocket') return json({ error: 'Expected websocket upgrade' }, 426);
+  if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'Expected websocket upgrade' }, 426);
+  return payload.org_id && isRole(payload.role) ? { terminalId: payload.terminal_id, orgId: payload.org_id, role: payload.role } : { terminalId: payload.terminal_id };
+}
 
-  const stub = getDeviceHub(env);
+// A device socket's tags in the hub. The terminal id always comes first —
+// /presence relies on that; the org tag is for org-wide pushes.
+export function deviceTags(socket: { terminalId: string; orgId?: string; role?: Role }): string[] {
+  return socket.orgId && socket.role ? [socket.terminalId, orgTag(socket.orgId, socket.role)] : [socket.terminalId];
+}
+
+async function connectDevice(request: Request, env: Env): Promise<Response> {
+  const socket = await deviceSocket(request, env);
+  if (socket instanceof Response) return socket;
   const doUrl = new URL('https://device-hub/connect');
-  doUrl.searchParams.set('terminal_id', payload.terminal_id);
-  if (payload.org_id && isRole(payload.role)) {
-    doUrl.searchParams.set('org_id', payload.org_id);
-    doUrl.searchParams.set('role', payload.role);
+  doUrl.searchParams.set('terminal_id', socket.terminalId);
+  if (socket.orgId && socket.role) {
+    doUrl.searchParams.set('org_id', socket.orgId);
+    doUrl.searchParams.set('role', socket.role);
   }
-  return stub.fetch(new Request(doUrl, request));
+  return getDeviceHub(env).fetch(new Request(doUrl, request));
 }
 
 // --- The order hub: "follow your order" pages ---
@@ -493,17 +506,29 @@ async function verifyOrderTicket(ticket: string | null, env: Env): Promise<Order
   }
 }
 
-async function connectOrder(request: Request, env: Env): Promise<Response> {
+// Which order a follow page's socket is for — or why it's refused (shared
+// with node.ts, like deviceSocket).
+export async function orderSocket(request: Request, env: Env): Promise<{ orgId: string; tabId: string } | Response> {
   const payload = await verifyOrderTicket(new URL(request.url).searchParams.get('ticket'), env);
   if (!payload) return json({ error: 'Invalid or expired ticket' }, 401);
-  if (request.headers.get('Upgrade') !== 'websocket') return json({ error: 'Expected websocket upgrade' }, 426);
-  const doUrl = new URL('https://order-hub/connect');
-  doUrl.searchParams.set('tab_id', payload.tab_id);
-  return getOrderHub(env, payload.org_id).fetch(new Request(doUrl, request));
+  if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'Expected websocket upgrade' }, 426);
+  return { orgId: payload.org_id, tabId: payload.tab_id };
 }
 
+async function connectOrder(request: Request, env: Env): Promise<Response> {
+  const socket = await orderSocket(request, env);
+  if (socket instanceof Response) return socket;
+  const doUrl = new URL('https://order-hub/connect');
+  doUrl.searchParams.set('tab_id', socket.tabId);
+  return getOrderHub(env, socket.orgId).fetch(new Request(doUrl, request));
+}
+
+// One order hub per organisation (its name; node.ts uses the same one).
+export const orderHubName = (orgId: string) => `org:${orgId}`;
+export const DEVICE_HUB_NAME = 'singleton';
+
 function getOrderHub(env: Env, orgId: string): DurableObjectStub {
-  return env.ORDER_HUB.get(env.ORDER_HUB.idFromName(`org:${orgId}`));
+  return env.ORDER_HUB.get(env.ORDER_HUB.idFromName(orderHubName(orgId)));
 }
 
 // The DO tag every socket of one role in one org carries (besides its terminal id).
@@ -512,7 +537,7 @@ function orgTag(orgId: string, role: Role): string {
 }
 
 function getDeviceHub(env: Env): DurableObjectStub {
-  const id = env.DEVICE_HUB.idFromName('singleton');
+  const id = env.DEVICE_HUB.idFromName(DEVICE_HUB_NAME);
   return env.DEVICE_HUB.get(id);
 }
 
@@ -546,11 +571,9 @@ export class DeviceHub implements DurableObject {
       const terminalId = url.searchParams.get('terminal_id');
       if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
 
-      // The terminal id always comes first — /presence relies on that.
-      const tags = [terminalId];
       const orgId = url.searchParams.get('org_id');
       const role = url.searchParams.get('role');
-      if (orgId && isRole(role)) tags.push(orgTag(orgId, role));
+      const tags = deviceTags(orgId && isRole(role) ? { terminalId, orgId, role } : { terminalId });
 
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
@@ -620,7 +643,7 @@ export class DeviceHub implements DurableObject {
 // its order costs nothing while nothing happens. At most MAX_FOLLOWERS
 // sockets — a cost/abuse brake (the safety belt): beyond it a page still
 // shows its status, just without live updates.
-const MAX_FOLLOWERS = 2000;
+export const MAX_FOLLOWERS = 2000;
 
 export class OrderHub implements DurableObject {
   constructor(private state: DurableObjectState) {}
