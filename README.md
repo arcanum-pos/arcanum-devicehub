@@ -35,7 +35,7 @@ installation points its users to that source.
 ## Self-hosted (SELF_HOSTING.md)
 
 The same Worker code runs on Node (`src/node.ts`): `npm run build:node`,
-then `node dist/node.js` with `WS_TOKEN_SECRET`, `INTERNAL_API_KEY`,
+then `node dist/node.mjs` with `WS_TOKEN_SECRET`, `INTERNAL_API_KEY`,
 `DEVICEHUB_DB` (its SQLite file) and `PORT`. The registry is D1 on SQLite
 (`src/node/d1.ts`, the schema applied at start); DeviceHub and OrderHub live
 in the process (`src/node/durable-objects.ts`, one replica). Sockets arrive

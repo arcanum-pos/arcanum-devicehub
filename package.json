@@ -8,8 +8,8 @@
     "typecheck": "tsc && tsc -p tsconfig.node.json && tsc -p test && tsc -p test/node",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:node": "esbuild src/node-main.ts --bundle --platform=node --format=esm --target=node22 --loader:.sql=text --outfile=dist/node.js --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
-    "start:node": "node dist/node.js"
+    "build:node": "esbuild src/node-main.ts --bundle --platform=node --format=esm --target=node22 --loader:.sql=text --outfile=dist/node.mjs --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "start:node": "node dist/node.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
