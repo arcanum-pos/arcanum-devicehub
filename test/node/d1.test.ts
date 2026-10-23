@@ -12,7 +12,7 @@ function db() {
 }
 
 describe('D1 on SQLite', () => {
-  it('first, all, run — with D1’s shapes', async () => {
+  it('first, all, run - with D1’s shapes', async () => {
     const d = db();
     const run = await d.prepare('INSERT INTO orgs (id, name) VALUES (?, ?)').bind('o1', 'Scouts').run();
     expect(run).toMatchObject({ success: true, meta: { changes: 1 } });

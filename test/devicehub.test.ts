@@ -99,7 +99,7 @@ describe('ws token', () => {
 });
 
 describe('POST /devices/broadcast-org', () => {
-  it("reaches every POS of that org — not another org's, not a CFD of the same org", async () => {
+  it("reaches every POS of that org - not another org's, not a CFD of the same org", async () => {
     const orgId = randomId('org');
     const posA = await connectDevice('pos', orgId);
     const posB = await connectDevice('pos', orgId);
@@ -294,7 +294,7 @@ describe('station screens and the order hub (self-ordering)', () => {
   }
   const ticketFor = async (orgId: string, tabId: string) => (await call('POST', '/orders/ticket', { org_id: orgId, tab_id: tabId })).body.ticket as string;
 
-  it("a tab change reaches the org's kassas and station screens, and the pages following that tab — nobody else", async () => {
+  it("a tab change reaches the org's kassas and station screens, and the pages following that tab - nobody else", async () => {
     const orgId = randomId('org');
     const pos = await connectDevice('pos', orgId);
     const station = await connectDevice('station', orgId);
@@ -335,7 +335,7 @@ describe('station screens and the order hub (self-ordering)', () => {
 });
 
 describe("a signed-in member's page (the waiter screen, release C)", () => {
-  it("gets a token for its organisation's kassa channel — only from arcanum-backend (the internal key)", async () => {
+  it("gets a token for its organisation's kassa channel - only from arcanum-backend (the internal key)", async () => {
     const orgId = randomId('org');
     expect((await call('POST', '/devices/member-ws-token', { org_id: orgId }, {})).status).toBe(401);
     expect((await call('POST', '/devices/member-ws-token', {})).status).toBe(400);
