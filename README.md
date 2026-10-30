@@ -1,5 +1,7 @@
 # arcanum-devicehub
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/arcanum-pos/arcanum-devicehub/badge)](https://scorecard.dev/viewer/?uri=github.com/arcanum-pos/arcanum-devicehub)
+
 The notification channel: device identity (kassa `pos`, customer display
 `cfd`, station screen `station`) and two hibernating Durable Objects that
 only ever relay an event name + id — the data is always fetched separately:
