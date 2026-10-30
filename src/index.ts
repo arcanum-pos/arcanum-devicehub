@@ -66,7 +66,7 @@ function isLinkableRole(value: string | null): value is 'cfd' | 'tap' {
 // --- Device registry (D1) ---
 
 async function registerDevice(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string; role?: string; org_id?: string; name?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { terminal_id?: string; role?: string; org_id?: string; name?: string };
   const terminalId = String(body.terminal_id || '');
   const role = body.role || '';
   const orgId = String(body.org_id || '');
@@ -95,7 +95,7 @@ async function setDeviceName(env: Env, terminalId: string, name: string) {
 }
 
 async function renameDevice(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string; name?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { terminal_id?: string; name?: string };
   const terminalId = String(body.terminal_id || '');
   const name = typeof body.name === 'string' ? body.name.trim().slice(0, 60) : '';
   if (!terminalId || !name) return json({ error: 'terminal_id and name are required' }, 400);
@@ -169,7 +169,7 @@ async function getLinkedDevice(request: Request, posTerminalId: string, env: Env
 }
 
 async function linkDevice(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { pos_terminal_id?: string; terminal_id?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { pos_terminal_id?: string; terminal_id?: string };
   const posTerminalId = String(body.pos_terminal_id || '');
   const targetTerminalId = String(body.terminal_id || '');
   if (!posTerminalId || !targetTerminalId) {
@@ -199,7 +199,7 @@ async function linkDevice(request: Request, env: Env): Promise<Response> {
 }
 
 async function unlinkDevice(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { terminal_id?: string };
   const targetTerminalId = String(body.terminal_id || '');
   if (!targetTerminalId) return json({ error: 'terminal_id is required' }, 400);
 
@@ -225,7 +225,7 @@ async function unlinkDevice(request: Request, env: Env): Promise<Response> {
 // mid-event. Removal is a deliberate admin action instead (see
 // `/devices/remove` below); `online` in listByOrg's response is display-only.
 async function removeDevice(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { terminal_id?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { terminal_id?: string };
   const terminalId = String(body.terminal_id || '');
   if (!terminalId) return json({ error: 'terminal_id is required' }, 400);
 
@@ -253,7 +253,7 @@ async function broadcastToPos(env: Env, posTerminalId: string, event: string, pa
 }
 
 async function resetEndpoint(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { pos_terminal_id?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { pos_terminal_id?: string };
   const posTerminalId = String(body.pos_terminal_id || '');
   if (!posTerminalId) return json({ error: 'pos_terminal_id is required' }, 400);
 
@@ -272,7 +272,7 @@ function requireInternalKey(request: Request, env: Env): boolean {
 async function broadcastEndpoint(request: Request, env: Env): Promise<Response> {
   if (!requireInternalKey(request, env)) return json({ error: 'Unauthorized' }, 401);
 
-  const body = (await request.json().catch(() => ({}))) as {
+  const body = ((await request.json().catch(() => null)) ?? {}) as {
     pos_terminal_id?: string;
     event?: string;
     payload?: Record<string, unknown>;
@@ -293,7 +293,7 @@ async function broadcastEndpoint(request: Request, env: Env): Promise<Response> 
 async function broadcastOrgEndpoint(request: Request, env: Env): Promise<Response> {
   if (!requireInternalKey(request, env)) return json({ error: 'Unauthorized' }, 401);
 
-  const body = (await request.json().catch(() => ({}))) as {
+  const body = ((await request.json().catch(() => null)) ?? {}) as {
     org_id?: string;
     role?: string;
     event?: string;
@@ -320,7 +320,7 @@ async function broadcastOrgEndpoint(request: Request, env: Env): Promise<Respons
 // "follow your order" page of one of these tabs gets `order_updated` (the
 // order hub). One call from the backend, whatever is listening.
 async function tabsChangedEndpoint(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { org_id?: string; tab_ids?: unknown };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { org_id?: string; tab_ids?: unknown };
   const orgId = String(body.org_id || '');
   const tabIds = Array.isArray(body.tab_ids) ? body.tab_ids.filter((t): t is string => typeof t === 'string' && !!t).slice(0, 100) : [];
   if (!orgId || !tabIds.length) return json({ error: 'org_id and tab_ids are required' }, 400);
@@ -431,7 +431,7 @@ async function issueWsToken(request: Request, env: Env): Promise<Response> {
 // organisation's kassa channel (tabs_changed and the like), under a
 // throwaway terminal id that no device has.
 async function issueMemberWsToken(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { org_id?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { org_id?: string };
   if (!body.org_id) return json({ error: 'org_id is required' }, 400);
   const token = await mintWsToken({ terminal_id: `member-${crypto.randomUUID()}`, org_id: body.org_id, role: 'pos', linked_to: null } as DeviceRow, env);
   return json({ token });
@@ -484,7 +484,7 @@ interface OrderTicketPayload {
 }
 
 async function orderTicketEndpoint(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json().catch(() => ({}))) as { org_id?: string; tab_id?: string };
+  const body = ((await request.json().catch(() => null)) ?? {}) as { org_id?: string; tab_id?: string };
   const orgId = String(body.org_id || '');
   const tabId = String(body.tab_id || '');
   if (!orgId || !tabId) return json({ error: 'org_id and tab_id are required' }, 400);
