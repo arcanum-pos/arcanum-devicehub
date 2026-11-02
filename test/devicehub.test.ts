@@ -261,6 +261,23 @@ describe('device names', () => {
   });
 });
 
+describe('GET /devices/:id', () => {
+  it('lists the devices linked to it, so a kassa is one call with its display and phone', async () => {
+    const orgId = randomId('org');
+    const pos = await register('pos', orgId);
+    expect((await call('GET', `/devices/${pos}`)).body).toMatchObject({ terminal_id: pos, org_id: orgId, role: 'pos', linked: [] });
+    const cfd = await register('cfd', orgId);
+    const tap = await register('tap', orgId);
+    await call('POST', '/devices/link', { pos_terminal_id: pos, terminal_id: cfd });
+    await call('POST', '/devices/link', { pos_terminal_id: pos, terminal_id: tap });
+    const linked = (await call('GET', `/devices/${pos}`)).body.linked;
+    expect(linked).toHaveLength(2);
+    expect(linked).toEqual(expect.arrayContaining([{ terminal_id: cfd, role: 'cfd' }, { terminal_id: tap, role: 'tap' }]));
+    await call('POST', '/devices/unlink', { terminal_id: cfd });
+    expect((await call('GET', `/devices/${pos}`)).body.linked).toEqual([{ terminal_id: tap, role: 'tap' }]);
+  });
+});
+
 describe("a kassa's Tap to Pay phone", () => {
   it('is linked like a customer display and hears the same payment events, next to it', async () => {
     const orgId = randomId('org');

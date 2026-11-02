@@ -112,10 +112,15 @@ async function getDeviceRow(env: Env, terminalId: string): Promise<DeviceRow | n
     .first<DeviceRow>();
 }
 
+// With the devices linked to it (a kassa's customer display, its Tap to Pay
+// phone): one call for the backend where it needed two (customer-view.ts).
 async function getDevice(terminalId: string, env: Env): Promise<Response> {
   const row = await getDeviceRow(env, terminalId);
   if (!row) return json({ error: 'Unknown terminal_id' }, 404);
-  return json(row);
+  const { results } = await env.DB.prepare('SELECT terminal_id, role FROM devices WHERE linked_to = ? ORDER BY created_at')
+    .bind(terminalId)
+    .all<{ terminal_id: string; role: Role }>();
+  return json({ ...row, linked: results || [] });
 }
 
 // Only offers devices that currently hold a live notification socket — no
