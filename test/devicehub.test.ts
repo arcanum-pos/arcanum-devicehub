@@ -207,6 +207,21 @@ describe('the former simulator role', () => {
   });
 });
 
+describe('a deleted org', () => {
+  it("loses every device and its name, and no other org's", async () => {
+    const orgId = randomId('org');
+    const other = randomId('org');
+    const pos = await register('pos', orgId);
+    await register('cfd', orgId);
+    const kept = await register('pos', other);
+    expect((await call('POST', '/devices/rename', { terminal_id: pos, name: 'Toog' })).status).toBe(200);
+    expect((await call('DELETE', `/devices/by-org/${orgId}`)).status).toBe(200);
+    expect((await call('GET', `/devices/by-org/${orgId}`)).body).toEqual([]);
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM device_names WHERE terminal_id = ?').bind(pos).first<{ n: number }>())?.n).toBe(0);
+    expect((await call('GET', `/devices/by-org/${other}`)).body.map((d: any) => d.terminal_id)).toEqual([kept]);
+  });
+});
+
 // The registry is arcanum-backend's to use (it checks who's asking); a
 // browser only gets its own socket: the token and the connection.
 describe('who may call what', () => {
@@ -217,6 +232,7 @@ describe('who may call what', () => {
       ['POST', '/devices/register', { terminal_id: randomId('pos'), role: 'pos', org_id: orgId }],
       ['POST', '/devices/rename', { terminal_id: pos, name: 'X' }],
       ['GET', `/devices/by-org/${orgId}`],
+      ['DELETE', `/devices/by-org/${orgId}`],
       ['GET', `/devices/${pos}`],
       ['GET', `/devices/${pos}/linked?role=cfd`],
       ['GET', `/devices/unlinked?role=cfd&org_id=${orgId}`],

@@ -161,6 +161,16 @@ async function listByOrg(orgId: string, env: Env): Promise<Response> {
   return json(withStatus);
 }
 
+// A deleted org's devices (arcanum-backend, organizations/delete.ts): gone
+// from the registry with their names.
+async function removeByOrg(orgId: string, env: Env): Promise<Response> {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM device_names WHERE terminal_id IN (SELECT terminal_id FROM devices WHERE org_id = ?)').bind(orgId),
+    env.DB.prepare('DELETE FROM devices WHERE org_id = ?').bind(orgId),
+  ]);
+  return json({ ok: true });
+}
+
 async function getLinkedDevice(request: Request, posTerminalId: string, env: Env): Promise<Response> {
   const role = new URL(request.url).searchParams.get('role');
   if (!isLinkableRole(role)) return json({ error: "role must be 'cfd' or 'tap'" }, 400);
@@ -739,6 +749,7 @@ export default {
       if (request.method === 'POST' && url.pathname === '/devices/member-ws-token') return await issueMemberWsToken(request, env);
       const byOrgMatch = url.pathname.match(/^\/devices\/by-org\/([^/]+)$/);
       if (request.method === 'GET' && byOrgMatch) return await listByOrg(decodeURIComponent(byOrgMatch[1]), env);
+      if (request.method === 'DELETE' && byOrgMatch) return await removeByOrg(decodeURIComponent(byOrgMatch[1]), env);
 
       const linkedMatch = url.pathname.match(/^\/devices\/([^/]+)\/linked$/);
       if (request.method === 'GET' && linkedMatch) return await getLinkedDevice(request, decodeURIComponent(linkedMatch[1]), env);
