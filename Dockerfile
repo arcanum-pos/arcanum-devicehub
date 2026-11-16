@@ -2,7 +2,7 @@
 # The same code as the Cloudflare Worker, bundled for Node (npm run build:node).
 # The bundle is plain JavaScript: built once, on the build machine's own
 # platform; only the image below is per architecture (amd64, arm64).
-FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS build
+FROM --platform=$BUILDPLATFORM node:24-alpine@sha256:a34ab6d7f6f4813f4d0c5469d74685604b962fbdbf5793a7bc7b4998ecb867c8 AS build
 WORKDIR /src
 # An empty /data for the image below (it has no mkdir).
 RUN mkdir -p /data
@@ -15,7 +15,7 @@ RUN npm run build:node
 # shell, no package manager: less to patch). Node is its entrypoint. As uid
 # 1000, like the Alpine image before (the installer runs it so; existing data
 # volumes belong to it).
-FROM gcr.io/distroless/nodejs24-debian13@sha256:03980f6fd2a3245fa06e371c36fd33528ebbc676a1d0f84e3e21d95cd291b807
+FROM gcr.io/distroless/nodejs24-debian13@sha256:b770c59f44ed459329508a73794e6d284f6c10143f83c8012a8f775cd514eca2
 LABEL org.opencontainers.image.source="https://github.com/arcanum-pos/arcanum-devicehub" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later" \
       org.opencontainers.image.description="tresjr devicehub — the device registry and the live WebSocket hub"
